@@ -22,6 +22,11 @@ public class MemoryContainerConstants {
     public static final String CREATED_TIME_FIELD = "created_time";
     public static final String LAST_UPDATED_TIME_FIELD = "last_updated_time";
     public static final String MEMORY_STORAGE_CONFIG_FIELD = "configuration";
+    // Epoch-millis timestamp stamped on a container the first time the retention orphan sweep processes it.
+    // The sweep defers all orphan deletion until orphan_ttl_days after this baseline, so working memory that
+    // predates retention activation (e.g. written before an upgrade, or via paths that create no session doc)
+    // gets one full grace window before it can ever be classified as orphaned and deleted.
+    public static final String ORPHAN_SWEEP_BASELINE_TIME_FIELD = "orphan_sweep_baseline_time";
 
     // Field names for MemoryConfiguration
     public static final String DISABLE_HISTORY_FIELD = "disable_history";
@@ -106,6 +111,8 @@ public class MemoryContainerConstants {
     // REST API paths
     public static final String BASE_MEMORY_CONTAINERS_PATH = "/_plugins/_ml/memory_containers";
     public static final String CREATE_MEMORY_CONTAINER_PATH = BASE_MEMORY_CONTAINERS_PATH + "/_create";
+    // Cluster-wide on-demand trigger for the memory retention job (runs the real, per-policy delete pipeline).
+    public static final String EXECUTE_MEMORY_RETENTION_PATH = BASE_MEMORY_CONTAINERS_PATH + "/_retention/_execute";
     public static final String PARAMETER_MEMORY_CONTAINER_ID = "memory_container_id";
     public static final String PARAMETER_DELETE_ALL_MEMORIES = "delete_all_memories";
     public static final String PARAMETER_DELETE_MEMORIES = "delete_memories";
@@ -125,6 +132,12 @@ public class MemoryContainerConstants {
     public static final String DELETE_MEMORIES_BY_QUERY_PATH = MEMORIES_PATH + "/{" + PARAMETER_MEMORY_TYPE + "}" + "/_delete_by_query";
     public static final String SEMANTIC_SEARCH_MEMORIES_PATH = MEMORIES_PATH + "/long-term/_semantic_search";
     public static final String HYBRID_SEARCH_MEMORIES_PATH = MEMORIES_PATH + "/long-term/_hybrid_search";
+    // Retention dry-run: preview what the scheduled retention job would delete, without deleting.
+    public static final String RETENTION_DRY_RUN_PATH = BASE_MEMORY_CONTAINERS_PATH
+        + "/{"
+        + PARAMETER_MEMORY_CONTAINER_ID
+        + "}/_retention/_dry_run";
+    public static final String RETENTION_DRY_RUN_ALL_PATH = BASE_MEMORY_CONTAINERS_PATH + "/_retention/_dry_run";
 
     // Memory types are defined in MemoryType enum
     // Memory strategy types are defined in MemoryStrategyType enum
@@ -147,6 +160,14 @@ public class MemoryContainerConstants {
     public static final String BACKEND_ROLE_INVALID_CHARACTERS_ERROR =
         "Backend role contains invalid characters. Only alphanumeric characters and :+=,.@-_/ are allowed: %s";
     public static final String BACKEND_ROLE_EMPTY_ERROR = "Backend role cannot be empty or blank";
+
+    // Pinned field
+    public static final String PINNED_FIELD = "pinned";
+
+    // Retention policy field names
+    public static final String RETENTION_POLICY_FIELD = "retention_policy";
+    public static final String RETENTION_DAYS_FIELD = "retention_days";
+    public static final String MAX_COUNT_FIELD = "max_count";
 
     // Model validation error messages
     public static final String LLM_MODEL_NOT_FOUND_ERROR = "LLM model with ID %s not found";

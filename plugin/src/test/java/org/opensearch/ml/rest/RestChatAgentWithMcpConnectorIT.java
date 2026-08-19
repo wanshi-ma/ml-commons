@@ -48,7 +48,6 @@ public class RestChatAgentWithMcpConnectorIT extends MLCommonsRestTestCase {
     private static final String AWS_SESSION_TOKEN = System.getenv("AWS_SESSION_TOKEN");
     private static final String REGION = "us-west-2";
     private static final String MODEL_ID_BEDROCK = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
-    private static final int MCP_TOOLS_SYNC_INTERVAL_SECONDS = 10;
 
     // Random suffix so the LLM can't hallucinate the canonical "iris_data" and pass the assertion
     // without actually calling ListIndexTool through MCP.
@@ -84,9 +83,8 @@ public class RestChatAgentWithMcpConnectorIT extends MLCommonsRestTestCase {
             );
         assertEquals(200, registerResponse.getStatusLine().getStatusCode());
 
-        // Registration is fire-and-forget and /_list reads the system index, not the per-node
-        // in-memory registry that serves tools/list (synced every 10s). Poll the MCP endpoint
-        // itself — the same call the agent's MCP client makes — until the tool is servable.
+        // Registration writes to the system index with an immediate refresh, and the MCP server
+        // loads tools from that index per request, so the tool is servable as soon as register returns.
         String toolsListRequest = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}";
         assertBusyWithFixedSleepTime(() -> {
             String toolsListBody;
@@ -110,9 +108,6 @@ public class RestChatAgentWithMcpConnectorIT extends MLCommonsRestTestCase {
                 toolsListBody.contains("ListIndexTool")
             );
         }, TimeValue.timeValueSeconds(30), TimeValue.timeValueMillis(500));
-
-        // Wait past two sync cycles so every node has loaded the tool before execute.
-        Thread.sleep(MCP_TOOLS_SYNC_INTERVAL_SECONDS * 2 * 1000L);
 
         ingestIrisData(irisIndex);
         llmModelId = registerAndDeployBedrockModel();
@@ -141,7 +136,7 @@ public class RestChatAgentWithMcpConnectorIT extends MLCommonsRestTestCase {
         deleteIndexWithAdminClient(irisIndex);
     }
 
-    @Ignore("Flaky: MCP tool registration race not fixable test-side; re-enable once addTool awaits sync")
+    @Ignore("Flaky on multi-node CI: MCP loopback tool call intermittently times out under load")
     public void testChatAgentWithMcpStreamableHttpConnector() throws IOException {
         HttpHost host = getClusterHosts().get(0);
         String mcpServerUrl = host.getSchemeName() + "://" + host.getHostName() + ":" + host.getPort();

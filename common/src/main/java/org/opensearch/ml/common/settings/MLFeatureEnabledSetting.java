@@ -6,6 +6,7 @@
 package org.opensearch.ml.common.settings;
 
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_AGENTIC_MEMORY_ENABLED;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_AGENTIC_SEARCH_TEMPLATE_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_AGENT_FRAMEWORK_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_AG_UI_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_CONNECTOR_PRIVATE_IP_ENABLED;
@@ -16,6 +17,7 @@ import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_LOC
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MCP_CONNECTOR_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MCP_HEADER_PASSTHROUGH_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MCP_SERVER_ENABLED;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_RETENTION_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_METRIC_COLLECTION_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MULTI_TENANCY_ENABLED;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_OFFLINE_BATCH_INFERENCE_ENABLED;
@@ -42,6 +44,7 @@ public class MLFeatureEnabledSetting {
     private volatile Boolean isRemoteInferenceEnabled;
     private volatile Boolean isAgentFrameworkEnabled;
     private volatile Boolean isUnifiedAgentApiEnabled;
+    private volatile Boolean isAgenticSearchTemplateEnabled;
 
     private volatile Boolean isLocalModelEnabled;
     private volatile Boolean isConnectorPrivateIpEnabled;
@@ -69,6 +72,8 @@ public class MLFeatureEnabledSetting {
 
     private volatile Boolean isRemoteAgenticMemoryEnabled;
 
+    private volatile Boolean isMemoryRetentionEnabled;
+
     private volatile Boolean isIndexInsightEnabled;
 
     private volatile Boolean isStreamEnabled;
@@ -85,6 +90,7 @@ public class MLFeatureEnabledSetting {
         isRemoteInferenceEnabled = ML_COMMONS_REMOTE_INFERENCE_ENABLED.get(settings);
         isAgentFrameworkEnabled = ML_COMMONS_AGENT_FRAMEWORK_ENABLED.get(settings);
         isUnifiedAgentApiEnabled = ML_COMMONS_UNIFIED_AGENT_API_ENABLED.get(settings);
+        isAgenticSearchTemplateEnabled = ML_COMMONS_AGENTIC_SEARCH_TEMPLATE_ENABLED.get(settings);
         isLocalModelEnabled = ML_COMMONS_LOCAL_MODEL_ENABLED.get(settings);
         isConnectorPrivateIpEnabled = ML_COMMONS_CONNECTOR_PRIVATE_IP_ENABLED.get(settings);
         trustedConnectorEndpointsRegex = ML_COMMONS_TRUSTED_CONNECTOR_ENDPOINTS_REGEX.get(settings);
@@ -100,6 +106,7 @@ public class MLFeatureEnabledSetting {
         isMcpConnectorEnabled = ML_COMMONS_MCP_CONNECTOR_ENABLED.get(settings);
         isAgenticMemoryEnabled = ML_COMMONS_AGENTIC_MEMORY_ENABLED.get(settings);
         isRemoteAgenticMemoryEnabled = ML_COMMONS_REMOTE_AGENTIC_MEMORY_ENABLED.get(settings);
+        isMemoryRetentionEnabled = ML_COMMONS_MEMORY_RETENTION_ENABLED.get(settings);
         isIndexInsightEnabled = ML_COMMONS_INDEX_INSIGHT_FEATURE_ENABLED.get(settings);
         isStreamEnabled = ML_COMMONS_STREAM_ENABLED.get(settings);
         maxJsonSize = MLCommonsSettings.ML_COMMONS_MAX_JSON_SIZE.get(settings);
@@ -115,6 +122,9 @@ public class MLFeatureEnabledSetting {
         clusterService
             .getClusterSettings()
             .addSettingsUpdateConsumer(ML_COMMONS_UNIFIED_AGENT_API_ENABLED, it -> isUnifiedAgentApiEnabled = it);
+        clusterService
+            .getClusterSettings()
+            .addSettingsUpdateConsumer(ML_COMMONS_AGENTIC_SEARCH_TEMPLATE_ENABLED, it -> isAgenticSearchTemplateEnabled = it);
         clusterService.getClusterSettings().addSettingsUpdateConsumer(ML_COMMONS_LOCAL_MODEL_ENABLED, it -> isLocalModelEnabled = it);
         clusterService
             .getClusterSettings()
@@ -139,6 +149,9 @@ public class MLFeatureEnabledSetting {
         clusterService
             .getClusterSettings()
             .addSettingsUpdateConsumer(ML_COMMONS_REMOTE_AGENTIC_MEMORY_ENABLED, it -> isRemoteAgenticMemoryEnabled = it);
+        clusterService
+            .getClusterSettings()
+            .addSettingsUpdateConsumer(ML_COMMONS_MEMORY_RETENTION_ENABLED, it -> isMemoryRetentionEnabled = it);
         clusterService.getClusterSettings().addSettingsUpdateConsumer(ML_COMMONS_STREAM_ENABLED, it -> isStreamEnabled = it);
         clusterService
             .getClusterSettings()
@@ -178,6 +191,14 @@ public class MLFeatureEnabledSetting {
      */
     public boolean isUnifiedAgentApiEnabled() {
         return isUnifiedAgentApiEnabled;
+    }
+
+    /**
+     * Whether the agentic search template CRUD APIs are enabled. Disabled by default pending security review.
+     * @return whether the agentic search template APIs are enabled.
+     */
+    public boolean isAgenticSearchTemplateEnabled() {
+        return isAgenticSearchTemplateEnabled;
     }
 
     /**
@@ -279,6 +300,15 @@ public class MLFeatureEnabledSetting {
      */
     public boolean isRemoteAgenticMemoryEnabled() {
         return isRemoteAgenticMemoryEnabled;
+    }
+
+    /**
+     * Whether the memory retention feature is enabled. If disabled, the memory container APIs reject
+     * retention_policy and the memory retention job does not run.
+     * @return whether the memory retention feature is enabled.
+     */
+    public boolean isMemoryRetentionEnabled() {
+        return isMemoryRetentionEnabled;
     }
 
     @VisibleForTesting

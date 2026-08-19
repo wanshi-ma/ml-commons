@@ -56,6 +56,8 @@ import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.FINAL_
 import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.OS_INDICES;
 import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.THOUGHT;
 import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.THOUGHT_RESPONSE;
+import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.TOOL_DESCRIPTIONS;
+import static org.opensearch.ml.engine.algorithms.agent.MLChatAgentRunner.TOOL_NAMES;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1279,6 +1281,44 @@ public class AgentUtilsTest extends MLStaticMockBase {
         String prompt = "test prompt";
 
         assertThrows(IllegalArgumentException.class, () -> AgentUtils.addToolsToFunctionCalling(tools, parameters, inputTools, prompt));
+    }
+
+    @Test
+    public void testAddToolsToFunctionCalling_setsEmptyToolPlaceholderParametersWhenNotProvided() {
+        Map<String, Tool> tools = new HashMap<>();
+        tools.put("Tool1", tool1);
+        when(tool1.getName()).thenReturn("Tool1");
+        when(tool1.getDescription()).thenReturn("Description of Tool1");
+        when(tool1.getAttributes()).thenReturn(null);
+
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put(TOOL_TEMPLATE, "{\"name\": \"${tool.name}\", \"description\": \"${tool.description}\"}");
+        List<String> inputTools = List.of("Tool1");
+
+        AgentUtils.addToolsToFunctionCalling(tools, parameters, inputTools, "test prompt");
+
+        assertEquals("", parameters.get(TOOL_DESCRIPTIONS));
+        assertEquals("", parameters.get(TOOL_NAMES));
+    }
+
+    @Test
+    public void testAddToolsToFunctionCalling_preservesExplicitToolPlaceholderParameters() {
+        Map<String, Tool> tools = new HashMap<>();
+        tools.put("Tool1", tool1);
+        when(tool1.getName()).thenReturn("Tool1");
+        when(tool1.getDescription()).thenReturn("Description of Tool1");
+        when(tool1.getAttributes()).thenReturn(null);
+
+        Map<String, String> parameters = new HashMap<>();
+        parameters.put(TOOL_TEMPLATE, "{\"name\": \"${tool.name}\", \"description\": \"${tool.description}\"}");
+        parameters.put(TOOL_DESCRIPTIONS, "custom tool descriptions");
+        parameters.put(TOOL_NAMES, "Tool1,Tool2");
+        List<String> inputTools = List.of("Tool1");
+
+        AgentUtils.addToolsToFunctionCalling(tools, parameters, inputTools, "");
+
+        assertEquals("custom tool descriptions", parameters.get(TOOL_DESCRIPTIONS));
+        assertEquals("Tool1,Tool2", parameters.get(TOOL_NAMES));
     }
 
     private static MLToolSpec buildTool(String name) {
@@ -3992,5 +4032,81 @@ public class AgentUtilsTest extends MLStaticMockBase {
         void clear() {
             logEvents.clear();
         }
+    }
+
+    // ===== Structured metric logging tests =====
+
+    @Test
+    public void testLogAgentExecutionFailure_completesWithoutException() {
+        AgentUtils.logAgentExecutionFailure("CONVERSATIONAL", "agent-1", "tenant-1", 100L, "500");
+    }
+
+    @Test
+    public void testLogAgentExecutionFailure_withNullValues() {
+        AgentUtils.logAgentExecutionFailure(null, null, null, 0L, null);
+    }
+
+    @Test
+    public void testLogAgentExecutionLatency_completesWithoutException() {
+        AgentUtils.logAgentExecutionLatency("CONVERSATIONAL", "agent-1", "tenant-1", 200L);
+    }
+
+    @Test
+    public void testLogAgentExecutionLatency_withTaskId_completesWithoutException() {
+        AgentUtils.logAgentExecutionLatency("CONVERSATIONAL", "agent-1", "tenant-1", 200L, "task-123");
+    }
+
+    @Test
+    public void testLogAgentExecutionLatency_withTaskId_nullValues() {
+        AgentUtils.logAgentExecutionLatency(null, null, null, 0L, null);
+    }
+
+    @Test
+    public void testLogToolInvocation_completesWithoutException() {
+        AgentUtils.logToolInvocation("SearchTool", "agent-1", "tenant-1");
+    }
+
+    @Test
+    public void testLogToolInvocation_withNullValues() {
+        AgentUtils.logToolInvocation(null, null, null);
+    }
+
+    @Test
+    public void testLogToolFailure_completesWithoutException() {
+        AgentUtils.logToolFailure("SearchTool", "agent-1", "tenant-1", "400");
+    }
+
+    @Test
+    public void testLogToolFailure_withNullValues() {
+        AgentUtils.logToolFailure(null, null, null, null);
+    }
+
+    @Test
+    public void testLogModelInvocationFailure_completesWithoutException() {
+        AgentUtils.logModelInvocationFailure("model-1", "agent-1", "tenant-1", "503");
+    }
+
+    @Test
+    public void testLogModelInvocationFailure_withNullValues() {
+        AgentUtils.logModelInvocationFailure(null, null, null, null);
+    }
+
+    @Test
+    public void testLogTimeToFirstToken_completesWithoutException() {
+        AgentUtils.logTimeToFirstToken("model-1", "tenant-1", 150L);
+    }
+
+    @Test
+    public void testLogTimeToFirstToken_withNullValues() {
+        AgentUtils.logTimeToFirstToken(null, null, 0L);
+    }
+
+    @Test
+    public void testLogMetric_oddKvPairs_triggersWarningAndDropsUnpairedKey() throws Exception {
+        // Exercises the private logMetric warning branch for odd number of kvPairs
+        java.lang.reflect.Method logMetric = AgentUtils.class.getDeclaredMethod("logMetric", boolean.class, String.class, Object[].class);
+        logMetric.setAccessible(true);
+        // Three kvPairs (odd) — the last "orphan-key" has no value and should be dropped
+        logMetric.invoke(null, false, "TestMetric", new Object[] { "key1", "val1", "orphan-key" });
     }
 }

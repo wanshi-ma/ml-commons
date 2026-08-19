@@ -7,8 +7,15 @@ package org.opensearch.ml.action.memorycontainer;
 
 import static org.opensearch.ml.common.CommonValue.ML_MEMORY_CONTAINER_INDEX;
 import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_AGENTIC_MEMORY_DISABLED_MESSAGE;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_HISTORY_MAX_COUNT;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_LONG_TERM_MAX_COUNT;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_SESSION_MAX_COUNT;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_SESSION_RETENTION_DAYS;
+import static org.opensearch.ml.common.settings.MLCommonsSettings.ML_COMMONS_MEMORY_RETENTION_DISABLED_MESSAGE;
 
 import java.time.Instant;
+import java.util.EnumMap;
+import java.util.Map;
 
 import org.opensearch.OpenSearchStatusException;
 import org.opensearch.action.DocWriteResponse;
@@ -16,7 +23,9 @@ import org.opensearch.action.index.IndexResponse;
 import org.opensearch.action.support.ActionFilters;
 import org.opensearch.action.support.HandledTransportAction;
 import org.opensearch.action.support.WriteRequest;
+import org.opensearch.cluster.service.ClusterService;
 import org.opensearch.common.inject.Inject;
+import org.opensearch.common.logging.HeaderWarning;
 import org.opensearch.common.util.concurrent.ThreadContext;
 import org.opensearch.commons.authuser.User;
 import org.opensearch.core.action.ActionListener;
@@ -24,11 +33,14 @@ import org.opensearch.core.rest.RestStatus;
 import org.opensearch.ml.common.memorycontainer.MLMemoryContainer;
 import org.opensearch.ml.common.memorycontainer.MemoryConfiguration;
 import org.opensearch.ml.common.memorycontainer.MemoryStrategy;
+import org.opensearch.ml.common.memorycontainer.MemoryType;
+import org.opensearch.ml.common.memorycontainer.RetentionRule;
 import org.opensearch.ml.common.settings.MLFeatureEnabledSetting;
 import org.opensearch.ml.common.transport.memorycontainer.MLCreateMemoryContainerAction;
 import org.opensearch.ml.common.transport.memorycontainer.MLCreateMemoryContainerInput;
 import org.opensearch.ml.common.transport.memorycontainer.MLCreateMemoryContainerRequest;
 import org.opensearch.ml.common.transport.memorycontainer.MLCreateMemoryContainerResponse;
+import org.opensearch.ml.common.utils.MLResourceIdUtils;
 import org.opensearch.ml.engine.indices.MLIndicesHandler;
 import org.opensearch.ml.helper.ConnectorAccessControlHelper;
 import org.opensearch.ml.helper.MemoryContainerModelValidator;
@@ -59,6 +71,7 @@ public class TransportCreateMemoryContainerAction extends
     private final ConnectorAccessControlHelper connectorAccessControlHelper;
     private final MLFeatureEnabledSetting mlFeatureEnabledSetting;
     private final MLModelManager mlModelManager;
+    private final ClusterService clusterService;
 
     @Inject
     public TransportCreateMemoryContainerAction(
@@ -69,7 +82,8 @@ public class TransportCreateMemoryContainerAction extends
         MLIndicesHandler mlIndicesHandler,
         ConnectorAccessControlHelper connectorAccessControlHelper,
         MLFeatureEnabledSetting mlFeatureEnabledSetting,
-        MLModelManager mlModelManager
+        MLModelManager mlModelManager,
+        ClusterService clusterService
     ) {
         super(MLCreateMemoryContainerAction.NAME, transportService, actionFilters, MLCreateMemoryContainerRequest::new);
         this.client = client;
@@ -78,6 +92,7 @@ public class TransportCreateMemoryContainerAction extends
         this.connectorAccessControlHelper = connectorAccessControlHelper;
         this.mlFeatureEnabledSetting = mlFeatureEnabledSetting;
         this.mlModelManager = mlModelManager;
+        this.clusterService = clusterService;
     }
 
     @Override
@@ -90,16 +105,29 @@ public class TransportCreateMemoryContainerAction extends
 
         MLCreateMemoryContainerInput input = request.getMlCreateMemoryContainerInput();
 
+        // Reject retention_policy when the retention feature is disabled (cluster-level kill switch)
+        if (!mlFeatureEnabledSetting.isMemoryRetentionEnabled()
+            && input.getConfiguration() != null
+            && input.getConfiguration().getRetentionPolicy() != null
+            && !input.getConfiguration().getRetentionPolicy().isEmpty()) {
+            listener.onFailure(new OpenSearchStatusException(ML_COMMONS_MEMORY_RETENTION_DISABLED_MESSAGE, RestStatus.FORBIDDEN));
+            return;
+        }
+
         // Validate tenant ID
         if (!TenantAwareHelper.validateTenantId(mlFeatureEnabledSetting, input.getTenantId(), listener)) {
             return;
         }
+        MLResourceIdUtils.validateCustomDocumentId(input.getMemoryContainerId(), "memory container id");
 
         User user = RestActionUtils.getUserContext(client);
         String tenantId = input.getTenantId();
 
         // Validate configuration before creating memory container
         validateConfiguration(input.getConfiguration(), ActionListener.wrap(isValid -> {
+            // Emit warning if sessions retention is set on a container with disableSession=true
+            emitDisableSessionRetentionWarning(input.getConfiguration());
+
             // Check if memory container index exists, create if not
             ActionListener<Boolean> indexCheckListener = ActionListener.wrap(created -> {
                 try {
@@ -107,7 +135,7 @@ public class TransportCreateMemoryContainerAction extends
                     MLMemoryContainer memoryContainer = buildMemoryContainer(input, user, tenantId);
 
                     // Index the memory container document (now includes auto-generated prefix if applicable)
-                    indexMemoryContainer(memoryContainer, ActionListener.wrap(memoryContainerId -> {
+                    indexMemoryContainer(memoryContainer, input.getMemoryContainerId(), ActionListener.wrap(memoryContainerId -> {
                         // Create memory data indices based on semantic storage config
                         createMemoryDataIndices(memoryContainer, user, ActionListener.wrap(actualIndexName -> {
                             listener.onResponse(new MLCreateMemoryContainerResponse(memoryContainerId, "created"));
@@ -141,6 +169,44 @@ public class TransportCreateMemoryContainerAction extends
                 // Set enabled to true if not specified (default for new strategies)
                 if (strategy.getEnabled() == null) {
                     strategy.setEnabled(true);
+                }
+            }
+        }
+
+        // Auto-apply admin-configured default retention policy when user did not provide one.
+        // Gated by the retention kill switch: when retention is disabled we neither accept a user policy
+        // (rejected in doExecute) nor stamp an admin default, so no policy is ever written while the feature is off.
+        if (mlFeatureEnabledSetting.isMemoryRetentionEnabled()
+            && configuration != null
+            && !configuration.isRetentionPolicyExplicitlyNull()) {
+            Map<MemoryType, RetentionRule> existingPolicy = configuration.getRetentionPolicy();
+            if (existingPolicy == null || existingPolicy.isEmpty()) {
+                int sessionRetentionDays = clusterService.getClusterSettings().get(ML_COMMONS_MEMORY_DEFAULT_SESSION_RETENTION_DAYS);
+                int sessionMaxCount = clusterService.getClusterSettings().get(ML_COMMONS_MEMORY_DEFAULT_SESSION_MAX_COUNT);
+                int longTermMaxCount = clusterService.getClusterSettings().get(ML_COMMONS_MEMORY_DEFAULT_LONG_TERM_MAX_COUNT);
+                int historyMaxCount = clusterService.getClusterSettings().get(ML_COMMONS_MEMORY_DEFAULT_HISTORY_MAX_COUNT);
+
+                boolean anyConfigured = sessionRetentionDays > 0 || sessionMaxCount > 0 || longTermMaxCount > 0 || historyMaxCount > 0;
+                if (anyConfigured) {
+                    Map<MemoryType, RetentionRule> defaultPolicy = new EnumMap<>(MemoryType.class);
+                    if (sessionRetentionDays > 0 || sessionMaxCount > 0) {
+                        defaultPolicy
+                            .put(
+                                MemoryType.SESSIONS,
+                                new RetentionRule(
+                                    sessionRetentionDays > 0 ? sessionRetentionDays : null,
+                                    sessionMaxCount > 0 ? sessionMaxCount : null
+                                )
+                            );
+                    }
+                    if (longTermMaxCount > 0) {
+                        defaultPolicy.put(MemoryType.LONG_TERM, new RetentionRule(null, longTermMaxCount));
+                    }
+                    if (historyMaxCount > 0) {
+                        defaultPolicy.put(MemoryType.HISTORY, new RetentionRule(null, historyMaxCount));
+                    }
+                    configuration.setRetentionPolicy(defaultPolicy);
+                    log.info("Auto-applied default retention policy to new container '{}'", input.getName());
                 }
             }
         }
@@ -241,50 +307,68 @@ public class TransportCreateMemoryContainerAction extends
         MemoryContainerPipelineHelper.createLongTermMemoryIngestPipeline(indexName, memoryConfig, mlIndicesHandler, client, listener);
     }
 
-    private void indexMemoryContainer(MLMemoryContainer container, ActionListener<String> listener) {
+    private void indexMemoryContainer(MLMemoryContainer container, String memoryContainerId, ActionListener<String> listener) {
         try (ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()) {
-            sdkClient
-                .putDataObjectAsync(
-                    PutDataObjectRequest
-                        .builder()
-                        .tenantId(container.getTenantId())
-                        .index(ML_MEMORY_CONTAINER_INDEX)
-                        .dataObject(container)
-                        .refreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE)
-                        .build()
-                )
-                .whenComplete((r, throwable) -> {
-                    context.restore();
-                    if (throwable != null) {
-                        Exception cause = SdkClientUtils.unwrapAndConvertToException(throwable);
-                        log.error("Failed to index memory container", cause);
-                        listener.onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR));
+            PutDataObjectRequest.Builder putRequestBuilder = PutDataObjectRequest
+                .builder()
+                .tenantId(container.getTenantId())
+                .index(ML_MEMORY_CONTAINER_INDEX)
+                .dataObject(container)
+                .refreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
+            if (memoryContainerId != null) {
+                putRequestBuilder.id(memoryContainerId).overwriteIfExists(false);
+            }
+            sdkClient.putDataObjectAsync(putRequestBuilder.build()).whenComplete((r, throwable) -> {
+                context.restore();
+                if (throwable != null) {
+                    Exception cause = SdkClientUtils.unwrapAndConvertToException(throwable);
+                    log.error("Failed to index memory container", cause);
+                    Exception reported = MLResourceIdUtils
+                        .toDocumentAlreadyExistsException(memoryContainerId, "memory container id", cause);
+                    if (reported != cause) {
+                        listener.onFailure(reported);
                     } else {
-                        try {
-                            IndexResponse indexResponse = r.indexResponse();
-                            assert indexResponse != null;
-                            if (indexResponse.getResult() == DocWriteResponse.Result.CREATED) {
-                                String generatedId = indexResponse.getId();
-                                log.info("Successfully created memory container with ID: {}", generatedId);
-                                listener.onResponse(generatedId);
-                            } else {
-                                log
-                                    .error(
-                                        "Failed to create memory container - unexpected index response result: {}",
-                                        indexResponse.getResult()
-                                    );
-                                listener
-                                    .onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR));
-                            }
-                        } catch (Exception e) {
-                            log.error("Failed to process index response", e);
+                        listener.onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR, cause));
+                    }
+                } else {
+                    try {
+                        IndexResponse indexResponse = r.indexResponse();
+                        assert indexResponse != null;
+                        if (indexResponse.getResult() == DocWriteResponse.Result.CREATED) {
+                            String generatedId = indexResponse.getId();
+                            log.info("Successfully created memory container with ID: {}", generatedId);
+                            listener.onResponse(generatedId);
+                        } else {
+                            log
+                                .error(
+                                    "Failed to create memory container - unexpected index response result: {}",
+                                    indexResponse.getResult()
+                                );
                             listener.onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR));
                         }
+                    } catch (Exception e) {
+                        log.error("Failed to process index response", e);
+                        listener.onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR));
                     }
-                });
+                }
+            });
         } catch (Exception e) {
             log.error("Failed to save memory container", e);
             listener.onFailure(new OpenSearchStatusException("Internal server error", RestStatus.INTERNAL_SERVER_ERROR));
+        }
+    }
+
+    private void emitDisableSessionRetentionWarning(MemoryConfiguration config) {
+        if (config == null) {
+            return;
+        }
+        Map<MemoryType, RetentionRule> retentionPolicy = config.getRetentionPolicy();
+        if (config.isDisableSession() && retentionPolicy != null && retentionPolicy.containsKey(MemoryType.SESSIONS)) {
+            HeaderWarning
+                .addWarning(
+                    "sessions retention_policy has no effect when disableSession=true;"
+                        + " working memory TTL is governed by cluster setting plugins.ml_commons.memory.working_memory_ttl_days"
+                );
         }
     }
 

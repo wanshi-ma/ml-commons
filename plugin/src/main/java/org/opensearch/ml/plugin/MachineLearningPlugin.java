@@ -38,6 +38,9 @@ import org.opensearch.action.ActionRequest;
 import org.opensearch.cluster.metadata.IndexNameExpressionResolver;
 import org.opensearch.cluster.node.DiscoveryNodes;
 import org.opensearch.cluster.service.ClusterService;
+import org.opensearch.common.inject.Inject;
+import org.opensearch.common.lifecycle.AbstractLifecycleComponent;
+import org.opensearch.common.lifecycle.LifecycleComponent;
 import org.opensearch.common.settings.ClusterSettings;
 import org.opensearch.common.settings.IndexScopedSettings;
 import org.opensearch.common.settings.Setting;
@@ -59,9 +62,16 @@ import org.opensearch.indices.analysis.PreBuiltCacheFactory;
 import org.opensearch.jobscheduler.spi.JobSchedulerExtension;
 import org.opensearch.jobscheduler.spi.ScheduledJobParser;
 import org.opensearch.jobscheduler.spi.ScheduledJobRunner;
+import org.opensearch.jobscheduler.spi.utils.LockService;
 import org.opensearch.ml.action.IndexInsight.GetIndexInsightConfigTransportAction;
 import org.opensearch.ml.action.IndexInsight.GetIndexInsightTransportAction;
 import org.opensearch.ml.action.IndexInsight.PutIndexInsightConfigTransportAction;
+import org.opensearch.ml.action.agenticsearch.AgenticSearchTemplateService;
+import org.opensearch.ml.action.agenticsearch.DeleteAgenticSearchTemplateTransportAction;
+import org.opensearch.ml.action.agenticsearch.GetAgenticSearchTemplateTransportAction;
+import org.opensearch.ml.action.agenticsearch.ListAgenticSearchTemplatesTransportAction;
+import org.opensearch.ml.action.agenticsearch.RegisterAgenticSearchTemplateTransportAction;
+import org.opensearch.ml.action.agenticsearch.UpdateAgenticSearchTemplateTransportAction;
 import org.opensearch.ml.action.agents.DeleteAgentTransportAction;
 import org.opensearch.ml.action.agents.GetAgentTransportAction;
 import org.opensearch.ml.action.agents.TransportRegisterAgentAction;
@@ -94,20 +104,18 @@ import org.opensearch.ml.action.execute.TransportExecuteStreamTaskAction;
 import org.opensearch.ml.action.execute.TransportExecuteTaskAction;
 import org.opensearch.ml.action.forward.TransportForwardAction;
 import org.opensearch.ml.action.handler.MLSearchHandler;
-import org.opensearch.ml.action.mcpserver.McpStatelessServerHolder;
 import org.opensearch.ml.action.mcpserver.McpToolsHelper;
 import org.opensearch.ml.action.mcpserver.TransportMcpConnectorListToolsAction;
 import org.opensearch.ml.action.mcpserver.TransportMcpServerAction;
 import org.opensearch.ml.action.mcpserver.TransportMcpToolsListAction;
 import org.opensearch.ml.action.mcpserver.TransportMcpToolsRegisterAction;
-import org.opensearch.ml.action.mcpserver.TransportMcpToolsRegisterOnNodesAction;
 import org.opensearch.ml.action.mcpserver.TransportMcpToolsRemoveAction;
-import org.opensearch.ml.action.mcpserver.TransportMcpToolsRemoveOnNodesAction;
 import org.opensearch.ml.action.mcpserver.TransportMcpToolsUpdateAction;
-import org.opensearch.ml.action.mcpserver.TransportMcpToolsUpdateOnNodesAction;
 import org.opensearch.ml.action.memorycontainer.TransportCreateMemoryContainerAction;
 import org.opensearch.ml.action.memorycontainer.TransportDeleteMemoryContainerAction;
+import org.opensearch.ml.action.memorycontainer.TransportExecuteMemoryRetentionAction;
 import org.opensearch.ml.action.memorycontainer.TransportGetMemoryContainerAction;
+import org.opensearch.ml.action.memorycontainer.TransportMemoryRetentionDryRunAction;
 import org.opensearch.ml.action.memorycontainer.TransportSearchMemoryContainerAction;
 import org.opensearch.ml.action.memorycontainer.TransportUpdateMemoryContainerAction;
 import org.opensearch.ml.action.memorycontainer.memory.TransportAddMemoriesAction;
@@ -179,6 +187,11 @@ import org.opensearch.ml.common.transport.agent.MLAgentGetAction;
 import org.opensearch.ml.common.transport.agent.MLAgentUpdateAction;
 import org.opensearch.ml.common.transport.agent.MLRegisterAgentAction;
 import org.opensearch.ml.common.transport.agent.MLSearchAgentAction;
+import org.opensearch.ml.common.transport.agenticsearch.MLDeleteAgenticSearchTemplateAction;
+import org.opensearch.ml.common.transport.agenticsearch.MLGetAgenticSearchTemplateAction;
+import org.opensearch.ml.common.transport.agenticsearch.MLListAgenticSearchTemplatesAction;
+import org.opensearch.ml.common.transport.agenticsearch.MLRegisterAgenticSearchTemplateAction;
+import org.opensearch.ml.common.transport.agenticsearch.MLUpdateAgenticSearchTemplateAction;
 import org.opensearch.ml.common.transport.batch.MLBatchIngestionAction;
 import org.opensearch.ml.common.transport.config.MLConfigGetAction;
 import org.opensearch.ml.common.transport.connector.MLConnectorDeleteAction;
@@ -210,15 +223,14 @@ import org.opensearch.ml.common.transport.mcpserver.action.MLMcpConnectorListToo
 import org.opensearch.ml.common.transport.mcpserver.action.MLMcpServerAction;
 import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsListAction;
 import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsRegisterAction;
-import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsRegisterOnNodesAction;
 import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsRemoveAction;
-import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsRemoveOnNodesAction;
 import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsUpdateAction;
-import org.opensearch.ml.common.transport.mcpserver.action.MLMcpToolsUpdateOnNodesAction;
 import org.opensearch.ml.common.transport.memorycontainer.MLCreateMemoryContainerAction;
+import org.opensearch.ml.common.transport.memorycontainer.MLExecuteMemoryRetentionAction;
 import org.opensearch.ml.common.transport.memorycontainer.MLMemoryContainerDeleteAction;
 import org.opensearch.ml.common.transport.memorycontainer.MLMemoryContainerGetAction;
 import org.opensearch.ml.common.transport.memorycontainer.MLMemoryContainerSearchAction;
+import org.opensearch.ml.common.transport.memorycontainer.MLMemoryRetentionDryRunAction;
 import org.opensearch.ml.common.transport.memorycontainer.memory.MLAddMemoriesAction;
 import org.opensearch.ml.common.transport.memorycontainer.memory.MLDeleteMemoriesByQueryAction;
 import org.opensearch.ml.common.transport.memorycontainer.memory.MLDeleteMemoryAction;
@@ -295,6 +307,7 @@ import org.opensearch.ml.helper.ConnectorAccessControlHelper;
 import org.opensearch.ml.helper.ModelAccessControlHelper;
 import org.opensearch.ml.jobs.MLJobParameter;
 import org.opensearch.ml.jobs.MLJobRunner;
+import org.opensearch.ml.jobs.processors.MemoryRetentionJobProcessor;
 import org.opensearch.ml.memory.ConversationalMemoryHandler;
 import org.opensearch.ml.memory.action.conversation.CreateConversationAction;
 import org.opensearch.ml.memory.action.conversation.CreateConversationTransportAction;
@@ -324,6 +337,9 @@ import org.opensearch.ml.memory.index.ConversationMetaIndex;
 import org.opensearch.ml.memory.index.OpenSearchConversationalMemoryHandler;
 import org.opensearch.ml.model.MLModelCacheHelper;
 import org.opensearch.ml.model.MLModelManager;
+import org.opensearch.ml.plugin.grpc.ClientAdapter;
+import org.opensearch.ml.plugin.grpc.ModelManagerAdapter;
+import org.opensearch.ml.plugin.grpc.UserContextProviderAdapter;
 import org.opensearch.ml.processor.MLInferenceIngestProcessor;
 import org.opensearch.ml.processor.MLInferenceSearchRequestProcessor;
 import org.opensearch.ml.processor.MLInferenceSearchResponseProcessor;
@@ -335,6 +351,7 @@ import org.opensearch.ml.rest.RestMLCreateControllerAction;
 import org.opensearch.ml.rest.RestMLCreateMemoryContainerAction;
 import org.opensearch.ml.rest.RestMLCreateSessionAction;
 import org.opensearch.ml.rest.RestMLDeleteAgentAction;
+import org.opensearch.ml.rest.RestMLDeleteAgenticSearchTemplateAction;
 import org.opensearch.ml.rest.RestMLDeleteConnectorAction;
 import org.opensearch.ml.rest.RestMLDeleteContextManagementTemplateAction;
 import org.opensearch.ml.rest.RestMLDeleteControllerAction;
@@ -346,8 +363,10 @@ import org.opensearch.ml.rest.RestMLDeleteModelGroupAction;
 import org.opensearch.ml.rest.RestMLDeleteTaskAction;
 import org.opensearch.ml.rest.RestMLDeployModelAction;
 import org.opensearch.ml.rest.RestMLExecuteAction;
+import org.opensearch.ml.rest.RestMLExecuteMemoryRetentionAction;
 import org.opensearch.ml.rest.RestMLExecuteStreamAction;
 import org.opensearch.ml.rest.RestMLGetAgentAction;
+import org.opensearch.ml.rest.RestMLGetAgenticSearchTemplateAction;
 import org.opensearch.ml.rest.RestMLGetConfigAction;
 import org.opensearch.ml.rest.RestMLGetConnectorAction;
 import org.opensearch.ml.rest.RestMLGetContextManagementTemplateAction;
@@ -361,13 +380,16 @@ import org.opensearch.ml.rest.RestMLGetModelGroupAction;
 import org.opensearch.ml.rest.RestMLGetTaskAction;
 import org.opensearch.ml.rest.RestMLGetToolAction;
 import org.opensearch.ml.rest.RestMLHybridSearchMemoriesAction;
+import org.opensearch.ml.rest.RestMLListAgenticSearchTemplatesAction;
 import org.opensearch.ml.rest.RestMLListContextManagementTemplatesAction;
 import org.opensearch.ml.rest.RestMLListToolsAction;
+import org.opensearch.ml.rest.RestMLMemoryRetentionDryRunAction;
 import org.opensearch.ml.rest.RestMLPredictionAction;
 import org.opensearch.ml.rest.RestMLPredictionStreamAction;
 import org.opensearch.ml.rest.RestMLProfileAction;
 import org.opensearch.ml.rest.RestMLPutIndexInsightConfigAction;
 import org.opensearch.ml.rest.RestMLRegisterAgentAction;
+import org.opensearch.ml.rest.RestMLRegisterAgenticSearchTemplateAction;
 import org.opensearch.ml.rest.RestMLRegisterModelAction;
 import org.opensearch.ml.rest.RestMLRegisterModelGroupAction;
 import org.opensearch.ml.rest.RestMLRegisterModelMetaAction;
@@ -384,6 +406,7 @@ import org.opensearch.ml.rest.RestMLTrainAndPredictAction;
 import org.opensearch.ml.rest.RestMLTrainingAction;
 import org.opensearch.ml.rest.RestMLUndeployModelAction;
 import org.opensearch.ml.rest.RestMLUpdateAgentAction;
+import org.opensearch.ml.rest.RestMLUpdateAgenticSearchTemplateAction;
 import org.opensearch.ml.rest.RestMLUpdateConnectorAction;
 import org.opensearch.ml.rest.RestMLUpdateContextManagementTemplateAction;
 import org.opensearch.ml.rest.RestMLUpdateControllerAction;
@@ -465,7 +488,9 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 
 import lombok.SneakyThrows;
+import lombok.extern.log4j.Log4j2;
 
+@Log4j2
 public class MachineLearningPlugin extends Plugin
     implements
         ActionPlugin,
@@ -489,7 +514,6 @@ public class MachineLearningPlugin extends Plugin
     public static final String INGEST_THREAD_POOL = "opensearch_ml_ingest";
     public static final String REGISTER_THREAD_POOL = "opensearch_ml_register";
     public static final String DEPLOY_THREAD_POOL = "opensearch_ml_deploy";
-    public static final String MCP_TOOLS_SYNC_THREAD_POOL = "opensearch_mcp_tools_sync";
     public static final String AGENTIC_MEMORY_THREAD_POOL = "opensearch_ml_agentic_memory";
     public static final String ML_BASE_URI = "/_plugins/_ml";
 
@@ -537,7 +561,6 @@ public class MachineLearningPlugin extends Plugin
     private ScriptService scriptService;
     private Encryptor encryptor;
     private McpToolsHelper mcpToolsHelper;
-    private McpStatelessServerHolder statelessServerHolder;
 
     public MachineLearningPlugin() {}
 
@@ -594,6 +617,8 @@ public class MachineLearningPlugin extends Plugin
                 new ActionHandler<>(MLCreateSessionAction.INSTANCE, TransportCreateSessionAction.class),
                 new ActionHandler<>(MLUpdateMemoryContainerAction.INSTANCE, TransportUpdateMemoryContainerAction.class),
                 new ActionHandler<>(MLMemoryContainerGetAction.INSTANCE, TransportGetMemoryContainerAction.class),
+                new ActionHandler<>(MLMemoryRetentionDryRunAction.INSTANCE, TransportMemoryRetentionDryRunAction.class),
+                new ActionHandler<>(MLExecuteMemoryRetentionAction.INSTANCE, TransportExecuteMemoryRetentionAction.class),
                 new ActionHandler<>(MLMemoryContainerSearchAction.INSTANCE, TransportSearchMemoryContainerAction.class),
                 new ActionHandler<>(MLMemoryContainerDeleteAction.INSTANCE, TransportDeleteMemoryContainerAction.class),
                 new ActionHandler<>(MLAddMemoriesAction.INSTANCE, TransportAddMemoriesAction.class),
@@ -628,18 +653,20 @@ public class MachineLearningPlugin extends Plugin
                 new ActionHandler<>(MLBatchIngestionAction.INSTANCE, TransportBatchIngestionAction.class),
                 new ActionHandler<>(MLCancelBatchJobAction.INSTANCE, CancelBatchJobTransportAction.class),
                 new ActionHandler<>(MLMcpToolsRegisterAction.INSTANCE, TransportMcpToolsRegisterAction.class),
-                new ActionHandler<>(MLMcpToolsRegisterOnNodesAction.INSTANCE, TransportMcpToolsRegisterOnNodesAction.class),
                 new ActionHandler<>(MLMcpToolsRemoveAction.INSTANCE, TransportMcpToolsRemoveAction.class),
-                new ActionHandler<>(MLMcpToolsRemoveOnNodesAction.INSTANCE, TransportMcpToolsRemoveOnNodesAction.class),
                 new ActionHandler<>(MLMcpToolsListAction.INSTANCE, TransportMcpToolsListAction.class),
                 new ActionHandler<>(MLMcpToolsUpdateAction.INSTANCE, TransportMcpToolsUpdateAction.class),
-                new ActionHandler<>(MLMcpToolsUpdateOnNodesAction.INSTANCE, TransportMcpToolsUpdateOnNodesAction.class),
                 new ActionHandler<>(MLMcpServerAction.INSTANCE, TransportMcpServerAction.class),
                 new ActionHandler<>(MLCreateContextManagementTemplateAction.INSTANCE, CreateContextManagementTemplateTransportAction.class),
                 new ActionHandler<>(MLUpdateContextManagementTemplateAction.INSTANCE, UpdateContextManagementTemplateTransportAction.class),
                 new ActionHandler<>(MLGetContextManagementTemplateAction.INSTANCE, GetContextManagementTemplateTransportAction.class),
                 new ActionHandler<>(MLListContextManagementTemplatesAction.INSTANCE, ListContextManagementTemplatesTransportAction.class),
-                new ActionHandler<>(MLDeleteContextManagementTemplateAction.INSTANCE, DeleteContextManagementTemplateTransportAction.class)
+                new ActionHandler<>(MLDeleteContextManagementTemplateAction.INSTANCE, DeleteContextManagementTemplateTransportAction.class),
+                new ActionHandler<>(MLRegisterAgenticSearchTemplateAction.INSTANCE, RegisterAgenticSearchTemplateTransportAction.class),
+                new ActionHandler<>(MLGetAgenticSearchTemplateAction.INSTANCE, GetAgenticSearchTemplateTransportAction.class),
+                new ActionHandler<>(MLUpdateAgenticSearchTemplateAction.INSTANCE, UpdateAgenticSearchTemplateTransportAction.class),
+                new ActionHandler<>(MLListAgenticSearchTemplatesAction.INSTANCE, ListAgenticSearchTemplatesTransportAction.class),
+                new ActionHandler<>(MLDeleteAgenticSearchTemplateAction.INSTANCE, DeleteAgenticSearchTemplateTransportAction.class)
             );
     }
 
@@ -819,6 +846,14 @@ public class MachineLearningPlugin extends Plugin
             new org.opensearch.ml.common.contextmanager.ActivationRuleFactory(),
             client
         );
+        // Agentic-search template param-schema service (register/derive/validate + CRUD).
+        AgenticSearchTemplateService agenticSearchTemplateService = new AgenticSearchTemplateService(
+            mlIndicesHandler,
+            client,
+            clusterService,
+            scriptService,
+            xContentRegistry
+        );
 
         mlExecuteTaskRunner = new MLExecuteTaskRunner(
             threadPool,
@@ -958,7 +993,20 @@ public class MachineLearningPlugin extends Plugin
         }
 
         mcpToolsHelper = new McpToolsHelper(client, toolFactoryWrapper);
-        statelessServerHolder = new McpStatelessServerHolder(mcpToolsHelper, client, threadPool);
+
+        // Initialize gRPC service factory only if transport-grpc module is available
+        try {
+            Class.forName("org.opensearch.transport.grpc.spi.GrpcServiceFactory");
+            org.opensearch.ml.grpc.MLGrpcServiceFactory
+                .initialize(
+                    new ModelManagerAdapter(mlModelManager),
+                    mlFeatureEnabledSetting,
+                    new ClientAdapter(client),
+                    new UserContextProviderAdapter(client)
+                );
+        } catch (ClassNotFoundException e) {
+            log.info("transport-grpc module not installed, gRPC streaming disabled");
+        }
 
         return ImmutableList
             .of(
@@ -991,7 +1039,7 @@ public class MachineLearningPlugin extends Plugin
                 sdkClient,
                 toolFactoryWrapper,
                 mcpToolsHelper,
-                statelessServerHolder
+                agenticSearchTemplateService
             );
     }
 
@@ -1075,6 +1123,12 @@ public class MachineLearningPlugin extends Plugin
             mlFeatureEnabledSetting
         );
         RestMLGetMemoryContainerAction restMLGetMemoryContainerAction = new RestMLGetMemoryContainerAction(mlFeatureEnabledSetting);
+        RestMLMemoryRetentionDryRunAction restMLMemoryRetentionDryRunAction = new RestMLMemoryRetentionDryRunAction(
+            mlFeatureEnabledSetting
+        );
+        RestMLExecuteMemoryRetentionAction restMLExecuteMemoryRetentionAction = new RestMLExecuteMemoryRetentionAction(
+            mlFeatureEnabledSetting
+        );
         RestMLSearchMemoryContainerAction restMLSearchMemoryContainerAction = new RestMLSearchMemoryContainerAction(
             mlFeatureEnabledSetting
         );
@@ -1134,6 +1188,21 @@ public class MachineLearningPlugin extends Plugin
             new RestMLListContextManagementTemplatesAction(mlFeatureEnabledSetting);
         RestMLDeleteContextManagementTemplateAction restMLDeleteContextManagementTemplateAction =
             new RestMLDeleteContextManagementTemplateAction(mlFeatureEnabledSetting);
+        RestMLRegisterAgenticSearchTemplateAction restMLRegisterAgenticSearchTemplateAction = new RestMLRegisterAgenticSearchTemplateAction(
+            mlFeatureEnabledSetting
+        );
+        RestMLGetAgenticSearchTemplateAction restMLGetAgenticSearchTemplateAction = new RestMLGetAgenticSearchTemplateAction(
+            mlFeatureEnabledSetting
+        );
+        RestMLUpdateAgenticSearchTemplateAction restMLUpdateAgenticSearchTemplateAction = new RestMLUpdateAgenticSearchTemplateAction(
+            mlFeatureEnabledSetting
+        );
+        RestMLListAgenticSearchTemplatesAction restMLListAgenticSearchTemplatesAction = new RestMLListAgenticSearchTemplatesAction(
+            mlFeatureEnabledSetting
+        );
+        RestMLDeleteAgenticSearchTemplateAction restMLDeleteAgenticSearchTemplateAction = new RestMLDeleteAgenticSearchTemplateAction(
+            mlFeatureEnabledSetting
+        );
         return ImmutableList
             .of(
                 restMLStatsAction,
@@ -1178,6 +1247,8 @@ public class MachineLearningPlugin extends Plugin
                 restMLCreateSessionAction,
                 restMLUpdateMemoryContainerAction,
                 restMLGetMemoryContainerAction,
+                restMLMemoryRetentionDryRunAction,
+                restMLExecuteMemoryRetentionAction,
                 restMLSearchMemoryContainerAction,
                 restMLDeleteMemoryContainerAction,
                 restMLAddMemoriesAction,
@@ -1218,7 +1289,12 @@ public class MachineLearningPlugin extends Plugin
                 restMLUpdateContextManagementTemplateAction,
                 restMLGetContextManagementTemplateAction,
                 restMLListContextManagementTemplatesAction,
-                restMLDeleteContextManagementTemplateAction
+                restMLDeleteContextManagementTemplateAction,
+                restMLRegisterAgenticSearchTemplateAction,
+                restMLGetAgenticSearchTemplateAction,
+                restMLUpdateAgenticSearchTemplateAction,
+                restMLListAgenticSearchTemplatesAction,
+                restMLDeleteAgenticSearchTemplateAction
             );
     }
 
@@ -1314,14 +1390,6 @@ public class MachineLearningPlugin extends Plugin
             ML_THREAD_POOL_PREFIX + STREAM_EXECUTE_THREAD_POOL,
             false
         );
-        FixedExecutorBuilder mcpThreadPool = new FixedExecutorBuilder(
-            settings,
-            MCP_TOOLS_SYNC_THREAD_POOL,
-            Math.max(1, OpenSearchExecutors.allocatedProcessors(settings) - 1),
-            10,
-            ML_THREAD_POOL_PREFIX + MCP_TOOLS_SYNC_THREAD_POOL,
-            false
-        );
 
         FixedExecutorBuilder agenticMemoryThreadPool = new FixedExecutorBuilder(
             settings,
@@ -1345,7 +1413,6 @@ public class MachineLearningPlugin extends Plugin
                 sdkClientThreadPool,
                 streamPredictThreadPool,
                 streamExecuteThreadPool,
-                mcpThreadPool,
                 agenticMemoryThreadPool
             );
     }
@@ -1437,14 +1504,24 @@ public class MachineLearningPlugin extends Plugin
                 MLCommonsSettings.ML_COMMONS_EXECUTE_TOOL_ENABLED,
                 MLCommonsSettings.ML_COMMONS_AGENTIC_MEMORY_ENABLED,
                 MLCommonsSettings.ML_COMMONS_REMOTE_AGENTIC_MEMORY_ENABLED,
+                MLCommonsSettings.ML_COMMONS_MEMORY_RETENTION_ENABLED,
                 MLCommonsSettings.ML_COMMONS_INDEX_INSIGHT_FEATURE_ENABLED,
                 MLCommonsSettings.REMOTE_METADATA_GLOBAL_TENANT_ID,
                 MLCommonsSettings.REMOTE_METADATA_GLOBAL_RESOURCE_CACHE_TTL,
                 MLCommonsSettings.ML_COMMONS_STREAM_ENABLED,
                 MLCommonsSettings.ML_COMMONS_MAX_JSON_SIZE,
                 MLCommonsSettings.ML_COMMONS_UNIFIED_AGENT_API_ENABLED,
+                MLCommonsSettings.ML_COMMONS_AGENTIC_SEARCH_TEMPLATE_ENABLED,
                 MLCommonsSettings.ML_COMMONS_MCP_HEADER_PASSTHROUGH_ENABLED,
-                MLCommonsSettings.ML_COMMONS_AG_UI_ENABLED
+                MLCommonsSettings.ML_COMMONS_AG_UI_ENABLED,
+                MLCommonsSettings.ML_COMMONS_MEMORY_RETENTION_JOB_INTERVAL_HOURS,
+                MLCommonsSettings.ML_COMMONS_MEMORY_RETENTION_JOB_THROTTLE_SECONDS,
+                MLCommonsSettings.ML_COMMONS_MEMORY_ORPHAN_TTL_DAYS,
+                MLCommonsSettings.ML_COMMONS_MEMORY_WORKING_MEMORY_TTL_DAYS,
+                MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_SESSION_RETENTION_DAYS,
+                MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_SESSION_MAX_COUNT,
+                MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_LONG_TERM_MAX_COUNT,
+                MLCommonsSettings.ML_COMMONS_MEMORY_DEFAULT_HISTORY_MAX_COUNT
             );
         return settings;
     }
@@ -1569,6 +1646,8 @@ public class MachineLearningPlugin extends Plugin
         systemIndexDescriptors.add(new SystemIndexDescriptor(ML_AGENTIC_MEMORY_INDEX_PATTERN, "ML Commons Agentic Memory Index Pattern"));
         systemIndexDescriptors
             .add(new SystemIndexDescriptor(ML_CONTEXT_MANAGEMENT_TEMPLATES_INDEX, "ML Commons Context Management Index "));
+        systemIndexDescriptors
+            .add(new SystemIndexDescriptor(ML_AGENTIC_SEARCH_TEMPLATES_INDEX, "ML Commons Agentic Search Templates Index"));
 
         return systemIndexDescriptors;
     }
@@ -1638,5 +1717,48 @@ public class MachineLearningPlugin extends Plugin
     @Override
     public ScheduledJobParser getJobParser() {
         return (parser, id, jobDocVersion) -> MLJobParameter.parse(parser);
+    }
+
+    @Override
+    public Collection<Class<? extends LifecycleComponent>> getGuiceServiceClasses() {
+        // Registers the holder so Guice constructs it and injects the JobScheduler LockService. The
+        // LockService impl lives in the job-scheduler plugin and is only reachable at runtime via this
+        // node-level binding (bound by JobSchedulerPluginModule); ml-commons compiles against the SPI
+        // interface only. This is the upstream-sanctioned way (used by security-analytics) for a guest
+        // plugin to obtain a LockService for use outside a scheduled job run.
+        return Collections.singletonList(GuiceHolder.class);
+    }
+
+    /**
+     * Guice service holder that captures the node's shared {@link LockService} and hands it to
+     * {@link MemoryRetentionJobProcessor}, so the on-demand retention trigger can acquire the SAME cluster-wide
+     * lock the scheduled run uses. Injection is the only supported way to reach the LockService implementation
+     * (which is provided at runtime by the job-scheduler plugin) from ml-commons code that is not itself a
+     * scheduled-job callback.
+     *
+     * <p>The LockService is wired via OPTIONAL METHOD injection, NOT constructor injection: a constructor
+     * parameter makes LockService a hard Guice binding, so on any harness where the job-scheduler plugin is not
+     * installed (e.g. integ-test clusters, some unit harnesses) node startup fails with an unsatisfied binding.
+     * An optional setter lets Guice skip the injection when no LockService binding exists, leaving the processor
+     * on its per-JVM {@link MemoryRetentionJobProcessor#isRunning} guard only. When job-scheduler IS present the
+     * setter fires at node start and the on-demand path gets the shared cluster-wide lock.
+     */
+    public static class GuiceHolder extends AbstractLifecycleComponent {
+
+        public GuiceHolder() {}
+
+        @Inject(optional = true)
+        public void setLockService(final LockService lockService) {
+            MemoryRetentionJobProcessor.setLockService(lockService);
+        }
+
+        @Override
+        protected void doStart() {}
+
+        @Override
+        protected void doStop() {}
+
+        @Override
+        protected void doClose() {}
     }
 }
